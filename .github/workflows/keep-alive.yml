@@ -1,0 +1,83 @@
+name: 🚀 SAP BTP Cloud Foundry 应用程序保活
+
+on:
+  schedule:
+    - cron: '45-55/5 23 * * *'	# UTC时间23:45-23:55（北京时间7:45-7:55）期间，每5分钟执行一次
+    - cron: '0-15/5 0 * * *'	  # UTC时间00:00-00:15（北京时间8:00-8:15）期间，每5分钟执行一次
+    - cron: '30 */8 * * *'   	  # 每8小时在30分执行
+  workflow_dispatch:          	# 允许手动触发
+
+jobs:
+  restart-app:
+    runs-on: ubuntu-latest
+    steps:
+    
+    - name: 1. 检出代码
+      uses: actions/checkout@v4
+      
+    - name: 2. 安装最新版CF CLI (V8)
+      run: |
+        # 添加 Cloud Foundry apt 源
+        wget -q -O - https://packages.cloudfoundry.org/debian/cli.cloudfoundry.org.key | sudo apt-key add -
+        echo "deb https://packages.cloudfoundry.org/debian stable main" | sudo tee /etc/apt/sources.list.d/cloudfoundry-cli.list
+        # 更新源并安装 cf8-cli
+        sudo apt-get update
+        sudo apt-get install -y cf8-cli
+        echo "安装的CF CLI版本:"
+        cf --version
+        
+    - name: 3. 登录Cloud Foundry
+      env:
+        CF_API: ${{ secrets.CF_API }}
+        CF_USERNAME: ${{ secrets.CF_USERNAME }}
+        CF_PASSWORD: ${{ secrets.CF_PASSWORD }}
+        CF_ORG: ${{ secrets.CF_ORG }}
+        CF_SPACE: ${{ secrets.CF_SPACE }}
+      run: |
+        echo "正在登录CF环境..."
+        cf login -a "$CF_API" -u "$CF_USERNAME" -p "$CF_PASSWORD" -o "$CF_ORG" -s "$CF_SPACE"
+        echo "登录成功！"
+        
+    - name: 4. 检查应用状态并判断是否需要重启
+      env:
+        CF_APP: ${{ secrets.CF_APP }}
+      run: |
+        echo "检查应用 ${{ secrets.CF_APP }} 的当前状态..."
+        
+        # 获取应用状态，提取"requested state"行
+        APP_STATUS=$(cf app "$CF_APP" | grep "requested state")
+        echo "应用 $CF_APP 状态信息: $APP_STATUS"
+        
+        # 判断应用是否正在运行
+        if [[ $APP_STATUS == *"started"* ]]; then
+          echo "应用 $CF_APP 正在运行中，跳过本次重启。"
+          # 设置一个标记，表明跳过了重启
+          echo "SKIP_RESTART=true" >> $GITHUB_ENV
+        else
+          echo "应用 $CF_APP 未运行或状态异常，继续执行重启。"
+          echo "SKIP_RESTART=false" >> $GITHUB_ENV
+        fi
+        
+    - name: 5. 重启应用（如需）
+      if: env.SKIP_RESTART == 'false'
+      env:
+        CF_APP: ${{ secrets.CF_APP }}
+      run: |
+        echo "开始重启应用 ${{ secrets.CF_APP }} ..."
+        cf restart "$CF_APP"
+        echo "应用 $CF_APP 重启命令执行完成！"
+        
+    - name: 6. 验证应用状态
+      env:
+        CF_APP: ${{ secrets.CF_APP }}
+      run: |
+        echo "检查应用 ${{ secrets.CF_APP }} 的状态..."
+        cf app "$CF_APP"
+        echo "✅ 应用 $CF_APP 保活任务完成！"
+        
+    - name: 7. 发送通知（可选）
+      if: always()
+      run: |
+        echo "任务状态: ${{ job.status }}"
+        # 这里可以添加邮件、钉钉或其他通知，例如使用actions-dashboard
+        # 可以通知任务执行结果，包括是否跳过了重启
